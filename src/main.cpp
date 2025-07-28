@@ -2,12 +2,31 @@
 #include <iostream>
 #include <vector>
 
+// Window
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
+#define TOTAL_WINDOW_HEIGHT (WINDOW_HEIGHT + HEADER_HEIGHT)
+#define FRAMES_PER_SECOND 144
+
+// Header
+#define HEADER_HEIGHT 40
+#define HEADER_BG_COLOR 0x1a1a1a
+#define HEADER_TEXT_COLOR 0xFFFFFF
+
+// Buttons
+#define BUTTON_WIDTH 100
+#define BUTTON_HEIGHT 30
+#define BUTTON_X (WINDOW_WIDTH - BUTTON_WIDTH - 10)
+#define BUTTON_Y 10
+#define COLOR_BUTTON_BG 0x333333
+#define COLOR_BUTTON_TEXT 0xFFFFFF
+#define COLOR_BUTTON_BORDER 0x888888
+
+// Grid
+#define GRID_OFFSET_Y HEADER_HEIGHT
 #define CELL_SIZE 10
 #define GRID_WIDTH (WINDOW_WIDTH / CELL_SIZE)
 #define GRID_HEIGHT (WINDOW_HEIGHT / CELL_SIZE)
-#define FRAMES_PER_SECOND 144
 #define COLOR_DEAD 0x0d101c
 #define COLOR_ALIVE 0xadadad
 #define MOUSE_HOVER_COLOR_DEAD 0x00ffff
@@ -70,8 +89,22 @@ void handleEvents(SDL_Event &event, GameState &gameState) {
     } else if (event.type == SDL_MOUSEBUTTONDOWN) {
       int x, y;
       SDL_GetMouseState(&x, &y);
+
+      if (y < HEADER_HEIGHT) {
+        // Check if clicked inside Pause/Resume button
+        if (x >= BUTTON_X && x <= BUTTON_X + BUTTON_WIDTH && y >= BUTTON_Y &&
+            y <= BUTTON_Y + BUTTON_HEIGHT) {
+          gameState.paused = !gameState.paused;
+        }
+        return; // Don't toggle grid if click was in header
+      }
+
+      // Skip toggling of cells if the mouse is in the header
+      if (y < GRID_OFFSET_Y)
+        return;
+
       int gridX = x / CELL_SIZE;
-      int gridY = y / CELL_SIZE;
+      int gridY = (y - GRID_OFFSET_Y) / CELL_SIZE;
       if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 &&
           gridY < GRID_HEIGHT) {
         bool current = getCell(gameState.grid, gridX, gridY);
@@ -98,9 +131,9 @@ void cleanupSDL(SDL_Window *window, SDL_Renderer *renderer) {
 }
 
 void createWindowAndRenderer(SDL_Window *&window, SDL_Renderer *&renderer) {
-  window =
-      SDL_CreateWindow("Game of Life", SDL_WINDOWPOS_UNDEFINED,
-                       SDL_WINDOWPOS_UNDEFINED, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
+  window = SDL_CreateWindow("Game of Life", SDL_WINDOWPOS_UNDEFINED,
+                            SDL_WINDOWPOS_UNDEFINED, WINDOW_WIDTH,
+                            TOTAL_WINDOW_HEIGHT, 0);
   if (!window) {
     std::cerr << "Window could not be created! SDL_Error: " << SDL_GetError()
               << '\n';
@@ -152,7 +185,8 @@ void drawChangedCells(SDL_Renderer *renderer, const Grid &grid,
             renderer, current ? (COLOR_ALIVE >> 16) : (COLOR_DEAD >> 16),
             current ? ((COLOR_ALIVE >> 8) & 0xFF) : ((COLOR_DEAD >> 8) & 0xFF),
             current ? (COLOR_ALIVE & 0xFF) : (COLOR_DEAD & 0xFF), 255);
-        SDL_Rect cell = {x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE};
+        SDL_Rect cell = {x * CELL_SIZE, y * CELL_SIZE + GRID_OFFSET_Y,
+                         CELL_SIZE, CELL_SIZE};
         SDL_RenderFillRect(renderer, &cell);
       }
     }
@@ -202,8 +236,30 @@ void drawMouseHover(const Grid &grid, SDL_Renderer *renderer, int &prevHoverX,
   }
 }
 
+void drawHeader(SDL_Renderer *renderer, const GameState &gameState) {
+  // Draw header background
+  SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
+  SDL_Rect header = {0, 0, WINDOW_WIDTH, HEADER_HEIGHT};
+  SDL_RenderFillRect(renderer, &header);
+
+  // Draw pause/resume button
+  SDL_Rect btn = {BUTTON_X, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT};
+  SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
+  SDL_RenderFillRect(renderer, &btn);
+
+  SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
+  SDL_RenderDrawRect(renderer, &btn);
+
+  // Optional: draw a simple pause/resume indicator
+  SDL_SetRenderDrawColor(renderer, gameState.paused ? 255 : 0,
+                         gameState.paused ? 0 : 255, 0, 255);
+  SDL_Rect status = {btn.x + 5, btn.y + 5, 20, 20};
+  SDL_RenderFillRect(renderer, &status);
+}
+
 void draw(SDL_Renderer *renderer, const Grid &grid, const Grid &previousGrid,
-          int &prevHoverX, int &prevHoverY) {
+          const GameState gameState, int &prevHoverX, int &prevHoverY) {
+  drawHeader(renderer, gameState);
   drawChangedCells(renderer, grid, previousGrid);
   drawMouseHover(grid, renderer, prevHoverX, prevHoverY);
   SDL_RenderPresent(renderer);
@@ -229,16 +285,15 @@ int main() {
   // Initial draw
   SDL_SetRenderDrawColor(renderer, (COLOR_DEAD >> 16),
                          ((COLOR_DEAD >> 8) & 0xFF), (COLOR_DEAD & 0xFF), 255);
-  SDL_RenderClear(renderer);
-  draw(renderer, gameState.grid, gameState.previousGrid, prevHoverX,
-       prevHoverY);
+  SDL_Rect gameField = {0, HEADER_HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT};
+  SDL_RenderFillRect(renderer, &gameField);
 
   SDL_Event event;
   while (gameState.running) {
     handleEvents(event, gameState);
 
-    draw(renderer, gameState.grid, gameState.previousGrid, prevHoverX,
-         prevHoverY);
+    draw(renderer, gameState.grid, gameState.previousGrid, gameState,
+         prevHoverX, prevHoverY);
 
     if (!gameState.paused || gameState.step) {
       gameState.step = false;
