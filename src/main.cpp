@@ -10,23 +10,33 @@
 #define FRAMES_PER_SECOND 144
 #define COLOR_DEAD 0x0d101c
 #define COLOR_ALIVE 0xadadad
+#define MOUSE_HOVER_COLOR_DEAD 0x00ffff
+#define MOUSE_HOVER_COLOR_ALIVE 0xff0000
 
-using Grid = std::vector<std::vector<bool>>;
+using Grid = std::vector<bool>;
 
 struct GameState {
   bool running;
   bool paused;
   bool step;
   Grid grid;
+  Grid nextGrid;
+  Grid previousGrid;
 };
+
+inline bool getCell(const Grid &grid, int x, int y) {
+  return grid[y * GRID_WIDTH + x];
+}
+
+inline void setCell(Grid &grid, int x, int y, bool value) {
+  grid[y * GRID_WIDTH + x] = value;
+}
 
 bool getAlive(bool isAlive, uint8_t neighbors) {
   return isAlive ? (neighbors == 2 || neighbors == 3) : (neighbors == 3);
 }
 
-Grid updateGrid(const Grid &oldGrid) {
-  Grid newGrid(GRID_WIDTH, std::vector<bool>(GRID_HEIGHT, false));
-
+void updateGrid(const Grid &current, Grid &next) {
   for (int x = 0; x < GRID_WIDTH; ++x) {
     for (int y = 0; y < GRID_HEIGHT; ++y) {
       uint8_t livingNeighbors = 0;
@@ -37,15 +47,14 @@ Grid updateGrid(const Grid &oldGrid) {
             continue;
           int nx = x + dx, ny = y + dy;
           if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT)
-            livingNeighbors += oldGrid[nx][ny];
+            livingNeighbors += getCell(current, nx, ny);
         }
       }
 
-      newGrid[x][y] = getAlive(oldGrid[x][y], livingNeighbors);
+      bool isAlive = getCell(current, x, y);
+      setCell(next, x, y, getAlive(isAlive, livingNeighbors));
     }
   }
-
-  return newGrid;
 }
 
 void handleEvents(SDL_Event &event, GameState &gameState) {
@@ -65,7 +74,8 @@ void handleEvents(SDL_Event &event, GameState &gameState) {
       int gridY = y / CELL_SIZE;
       if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 &&
           gridY < GRID_HEIGHT) {
-        gameState.grid[gridX][gridY] = !gameState.grid[gridX][gridY];
+        bool current = getCell(gameState.grid, gridX, gridY);
+        setCell(gameState.grid, gridX, gridY, !current);
       }
     }
   }
@@ -108,59 +118,94 @@ void createWindowAndRenderer(SDL_Window *&window, SDL_Renderer *&renderer) {
 }
 
 Grid initializeGrid() {
-  Grid grid(GRID_WIDTH, std::vector<bool>(GRID_HEIGHT, false));
+  Grid grid(GRID_WIDTH * GRID_HEIGHT, false);
 
   // Block
-  grid[1][1] = grid[2][1] = true;
-  grid[1][2] = grid[2][2] = true;
+  setCell(grid, 1, 1, true);
+  setCell(grid, 1, 2, true);
+  setCell(grid, 2, 1, true);
+  setCell(grid, 2, 2, true);
 
   // Blinker
-  grid[6][1] = grid[6][2] = grid[6][3] = true;
+  setCell(grid, 6, 1, true);
+  setCell(grid, 6, 2, true);
+  setCell(grid, 6, 3, true);
 
   // Glider
-  grid[12][1] = grid[13][2] = true;
-  grid[11][3] = grid[12][3] = grid[13][3] = true;
+  setCell(grid, 12, 1, true);
+  setCell(grid, 13, 2, true);
+  setCell(grid, 11, 3, true);
+  setCell(grid, 12, 3, true);
+  setCell(grid, 13, 3, true);
 
   return grid;
 }
 
-void clearGrid(SDL_Renderer *renderer) {
-  SDL_SetRenderDrawColor(renderer, COLOR_DEAD >> 16, (COLOR_DEAD >> 8) & 0xFF,
-                         COLOR_DEAD & 0xFF, 255);
-  SDL_RenderClear(renderer);
-}
-
-void draw(SDL_Renderer *renderer, const Grid &grid) {
+void drawChangedCells(SDL_Renderer *renderer, const Grid &grid,
+                      const Grid &prev) {
   for (int x = 0; x < GRID_WIDTH; ++x) {
     for (int y = 0; y < GRID_HEIGHT; ++y) {
-      if (grid[x][y]) {
-        SDL_SetRenderDrawColor(renderer, COLOR_ALIVE >> 16,
-                               (COLOR_ALIVE >> 8) & 0xFF, COLOR_ALIVE & 0xFF,
-                               255);
+      bool current = getCell(grid, x, y);
+      bool previous = getCell(prev, x, y);
+      if (current != previous) {
+        SDL_SetRenderDrawColor(
+            renderer, current ? (COLOR_ALIVE >> 16) : (COLOR_DEAD >> 16),
+            current ? ((COLOR_ALIVE >> 8) & 0xFF) : ((COLOR_DEAD >> 8) & 0xFF),
+            current ? (COLOR_ALIVE & 0xFF) : (COLOR_DEAD & 0xFF), 255);
         SDL_Rect cell = {x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE};
         SDL_RenderFillRect(renderer, &cell);
       }
     }
   }
+}
 
+void drawMouseHover(const Grid &grid, SDL_Renderer *renderer, int &prevHoverX,
+                    int &prevHoverY) {
   int mouseX, mouseY;
   SDL_GetMouseState(&mouseX, &mouseY);
   int hoverX = mouseX / CELL_SIZE;
   int hoverY = mouseY / CELL_SIZE;
 
-  if (hoverX >= 0 && hoverX < GRID_WIDTH && hoverY >= 0 &&
-      hoverY < GRID_HEIGHT) {
-    if (grid[hoverX][hoverY]) {
-      SDL_SetRenderDrawColor(renderer, 255, 0, 0, 128);
-    } else {
-      SDL_SetRenderDrawColor(renderer, 0, 255, 255, 128);
-    }
-    SDL_Rect hoverRect = {hoverX * CELL_SIZE, hoverY * CELL_SIZE, CELL_SIZE,
-                          CELL_SIZE};
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_RenderFillRect(renderer, &hoverRect);
+  // Clear previous hover by redrawing cell state
+  if (prevHoverX != -1 && prevHoverY != -1 &&
+      (prevHoverX != hoverX || prevHoverY != hoverY)) {
+    bool prevAlive = getCell(grid, prevHoverX, prevHoverY);
+    SDL_SetRenderDrawColor(
+        renderer, prevAlive ? (COLOR_ALIVE >> 16) : (COLOR_DEAD >> 16),
+        prevAlive ? ((COLOR_ALIVE >> 8) & 0xFF) : ((COLOR_DEAD >> 8) & 0xFF),
+        prevAlive ? (COLOR_ALIVE & 0xFF) : (COLOR_DEAD & 0xFF), 255);
+    SDL_Rect prevRect = {prevHoverX * CELL_SIZE, prevHoverY * CELL_SIZE,
+                         CELL_SIZE, CELL_SIZE};
+    SDL_RenderFillRect(renderer, &prevRect);
   }
 
+  // Draw new hover
+  if (hoverX >= 0 && hoverX < GRID_WIDTH && hoverY >= 0 &&
+      hoverY < GRID_HEIGHT) {
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(
+        renderer,
+        getCell(grid, hoverX, hoverY) ? (MOUSE_HOVER_COLOR_ALIVE >> 16)
+                                      : (MOUSE_HOVER_COLOR_DEAD >> 16),
+        getCell(grid, hoverX, hoverY) ? ((MOUSE_HOVER_COLOR_ALIVE >> 8) & 0xFF)
+                                      : ((MOUSE_HOVER_COLOR_DEAD >> 8) & 0xFF),
+        getCell(grid, hoverX, hoverY) ? (MOUSE_HOVER_COLOR_ALIVE & 0xFF)
+                                      : (MOUSE_HOVER_COLOR_DEAD & 0xFF),
+        255);
+    SDL_Rect hoverRect = {hoverX * CELL_SIZE, hoverY * CELL_SIZE, CELL_SIZE,
+                          CELL_SIZE};
+    SDL_RenderFillRect(renderer, &hoverRect);
+
+    // Update previous hover
+    prevHoverX = hoverX;
+    prevHoverY = hoverY;
+  }
+}
+
+void draw(SDL_Renderer *renderer, const Grid &grid, const Grid &previousGrid,
+          int &prevHoverX, int &prevHoverY) {
+  drawChangedCells(renderer, grid, previousGrid);
+  drawMouseHover(grid, renderer, prevHoverX, prevHoverY);
   SDL_RenderPresent(renderer);
 }
 
@@ -171,17 +216,35 @@ int main() {
   initSDL();
   createWindowAndRenderer(window, renderer);
 
-  GameState gameState = {true, true, false, initializeGrid()};
+  GameState gameState = {
+      .running = true,
+      .paused = true,
+      .step = false,
+      .grid = initializeGrid(),
+      .nextGrid = Grid(GRID_WIDTH * GRID_HEIGHT, false),
+      .previousGrid = Grid(GRID_WIDTH * GRID_HEIGHT, false),
+  };
+  int prevHoverX = -1, prevHoverY = -1;
+
+  // Initial draw
+  SDL_SetRenderDrawColor(renderer, (COLOR_DEAD >> 16),
+                         ((COLOR_DEAD >> 8) & 0xFF), (COLOR_DEAD & 0xFF), 255);
+  SDL_RenderClear(renderer);
+  draw(renderer, gameState.grid, gameState.previousGrid, prevHoverX,
+       prevHoverY);
 
   SDL_Event event;
   while (gameState.running) {
-    clearGrid(renderer);
     handleEvents(event, gameState);
-    draw(renderer, gameState.grid);
+
+    draw(renderer, gameState.grid, gameState.previousGrid, prevHoverX,
+         prevHoverY);
 
     if (!gameState.paused || gameState.step) {
       gameState.step = false;
-      gameState.grid = updateGrid(gameState.grid);
+      updateGrid(gameState.grid, gameState.nextGrid);
+      gameState.previousGrid = gameState.grid;
+      std::swap(gameState.grid, gameState.nextGrid);
     }
 
     SDL_Delay(1000 / FRAMES_PER_SECOND);
